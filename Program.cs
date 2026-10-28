@@ -9,12 +9,15 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<RabbitMqOptions>(builder.Configuration.GetSection(RabbitMqOptions.SectionName));
 builder.Services.AddSingleton<EventPublisher>();
 
+var ordersCookingStarted = Metrics.CreateCounter("orders_cooking_started_total", "Total number of orders that started cooking.");
+var ordersCooked = Metrics.CreateCounter("orders_cooked_total", "Total number of orders that finished cooking.");
+
 builder.Services.AddSingleton<IReadOnlyList<ConsumerBinding>>(sp =>
 {
     var publisher = sp.GetRequiredService<EventPublisher>();
     return new List<ConsumerBinding>
     {
-        new("cooker.paid-orders", "payment.succeeded", envelope => HandlePaymentSucceededAsync(envelope, publisher)),
+        new("cooker.paid-orders", "payment.succeeded", envelope => HandlePaymentSucceededAsync(envelope, publisher, ordersCookingStarted, ordersCooked)),
     };
 });
 builder.Services.AddHostedService<EventConsumerHostedService>();
@@ -33,8 +36,10 @@ app.MapHealthChecks("/healthz/ready", new() { Predicate = c => c.Tags.Contains("
 
 app.Run();
 
-static Task HandlePaymentSucceededAsync(EventEnvelope envelope, EventPublisher publisher)
+static Task HandlePaymentSucceededAsync(EventEnvelope envelope, EventPublisher publisher, Counter ordersCookingStarted, Counter ordersCooked)
 {
+    ordersCookingStarted.Inc();
+
     var cookedEnvelope = envelope with
     {
         EventId = Guid.NewGuid(),
@@ -44,6 +49,7 @@ static Task HandlePaymentSucceededAsync(EventEnvelope envelope, EventPublisher p
     };
 
     publisher.Publish("order.cooked", cookedEnvelope);
+    ordersCooked.Inc();
 
     return Task.CompletedTask;
 }
