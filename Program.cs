@@ -38,7 +38,30 @@ app.Run();
 
 static Task HandlePaymentSucceededAsync(EventEnvelope envelope, EventPublisher publisher, Counter ordersCookingStarted, Counter ordersCooked)
 {
+    var payload = envelope.Payload.Deserialize<PaymentSucceededPayload>()!;
+
     ordersCookingStarted.Inc();
+
+    var startedEnvelope = envelope with
+    {
+        EventId = Guid.NewGuid(),
+        EventType = "order.cooking-started",
+        OccurredAt = DateTimeOffset.UtcNow,
+        Payload = JsonSerializer.SerializeToElement(new OrderCookingStartedPayload()),
+    };
+    publisher.Publish("order.cooking-started", startedEnvelope);
+
+    // Not awaited: the consumer dispatches deliveries on this channel sequentially,
+    // so blocking here for the cook time would stop other orders from even starting
+    // to cook until this one finishes.
+    _ = CookAsync(envelope, publisher, ordersCooked, CookTimes.ForOrder(payload.Items));
+
+    return Task.CompletedTask;
+}
+
+static async Task CookAsync(EventEnvelope envelope, EventPublisher publisher, Counter ordersCooked, int cookSeconds)
+{
+    await Task.Delay(TimeSpan.FromSeconds(cookSeconds));
 
     var cookedEnvelope = envelope with
     {
@@ -50,6 +73,4 @@ static Task HandlePaymentSucceededAsync(EventEnvelope envelope, EventPublisher p
 
     publisher.Publish("order.cooked", cookedEnvelope);
     ordersCooked.Inc();
-
-    return Task.CompletedTask;
 }
