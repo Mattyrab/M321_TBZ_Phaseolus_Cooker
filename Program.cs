@@ -15,9 +15,10 @@ var ordersCooked = Metrics.CreateCounter("orders_cooked_total", "Total number of
 builder.Services.AddSingleton<IReadOnlyList<ConsumerBinding>>(sp =>
 {
     var publisher = sp.GetRequiredService<EventPublisher>();
+    var logger = sp.GetRequiredService<ILogger<Program>>();
     return new List<ConsumerBinding>
     {
-        new("cooker.paid-orders", "payment.succeeded", envelope => HandlePaymentSucceededAsync(envelope, publisher, ordersCookingStarted, ordersCooked)),
+        new("cooker.paid-orders", "payment.succeeded", envelope => HandlePaymentSucceededAsync(envelope, publisher, ordersCookingStarted, ordersCooked, logger)),
     };
 });
 builder.Services.AddHostedService<EventConsumerHostedService>();
@@ -36,7 +37,7 @@ app.MapHealthChecks("/healthz/ready", new() { Predicate = c => c.Tags.Contains("
 
 app.Run();
 
-static Task HandlePaymentSucceededAsync(EventEnvelope envelope, EventPublisher publisher, Counter ordersCookingStarted, Counter ordersCooked)
+static Task HandlePaymentSucceededAsync(EventEnvelope envelope, EventPublisher publisher, Counter ordersCookingStarted, Counter ordersCooked, ILogger<Program> logger)
 {
     var payload = envelope.Payload.Deserialize<PaymentSucceededPayload>()!;
 
@@ -50,16 +51,17 @@ static Task HandlePaymentSucceededAsync(EventEnvelope envelope, EventPublisher p
         Payload = JsonSerializer.SerializeToElement(new OrderCookingStartedPayload()),
     };
     publisher.Publish("order.cooking-started", startedEnvelope);
+    logger.LogInformation("Cooking started for order {OrderId}", envelope.OrderId);
 
     // Not awaited: the consumer dispatches deliveries on this channel sequentially,
     // so blocking here for the cook time would stop other orders from even starting
     // to cook until this one finishes.
-    _ = CookAsync(envelope, publisher, ordersCooked, CookTimes.ForOrder(payload.Items));
+    _ = CookAsync(envelope, publisher, ordersCooked, CookTimes.ForOrder(payload.Items), logger);
 
     return Task.CompletedTask;
 }
 
-static async Task CookAsync(EventEnvelope envelope, EventPublisher publisher, Counter ordersCooked, int cookSeconds)
+static async Task CookAsync(EventEnvelope envelope, EventPublisher publisher, Counter ordersCooked, int cookSeconds, ILogger<Program> logger)
 {
     await Task.Delay(TimeSpan.FromSeconds(cookSeconds));
 
@@ -73,4 +75,5 @@ static async Task CookAsync(EventEnvelope envelope, EventPublisher publisher, Co
 
     publisher.Publish("order.cooked", cookedEnvelope);
     ordersCooked.Inc();
+    logger.LogInformation("Cooking finished for order {OrderId}", envelope.OrderId);
 }
